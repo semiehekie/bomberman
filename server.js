@@ -159,12 +159,21 @@ function addPlayerToGame(roomId, playerId, playerData) {
   
   const game = games[roomId];
   if (game.players.length < 3) {
-    const spawnPoint = SPAWN_POINTS[game.players.length];
+    // Find the first available player slot (based on spawn point)
+    let playerSlot = 0;
+    for (let i = 0; i < 3; i++) {
+      if (!game.players.find(p => p.playerNumber === i + 1)) {
+        playerSlot = i;
+        break;
+      }
+    }
+    
+    const spawnPoint = SPAWN_POINTS[playerSlot];
     const newPlayer = {
       id: playerId,
       x: spawnPoint.x,
       y: spawnPoint.y,
-      playerNumber: game.players.length + 1,
+      playerNumber: playerSlot + 1,
       bombs: 1,
       bombRadius: BOMB_RADIUS,
       speed: 150,

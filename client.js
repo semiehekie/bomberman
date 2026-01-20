@@ -234,7 +234,7 @@ function showGameOverModal(message) {
 
 function startInputHandling() {
   document.addEventListener('keydown', (e) => {
-    if (game.gameOver) return;
+    if (game.gameOver || !game.gameStarted) return;
     
     // Get the key with proper case handling for arrow keys
     let key = e.key.toLowerCase();
