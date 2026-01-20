@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bomberman Co-op - 3 Spelers</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🎮 Bomberman Co-op</h1>
+      <div class="status" id="status">Verbinden met server...</div>
+    </header>
+
+    <main>
+      <div class="game-wrapper">
+        <div id="gameBoard" class="game-board"></div>
+        
+        <div class="sidebar">
+          <div class="players-info">
+            <h2>Spelers</h2>
+            <div id="playersStats"></div>
+          </div>
+
+          <div class="controls-info">
+            <h2>Bediening</h2>
+            <div class="player-controls">
+              <h3>Speler 1 (Rood)</h3>
+              <p><strong>Beweging:</strong> W A S D</p>
+              <p><strong>Bom:</strong> SPATIE</p>
+            </div>
+            <div class="player-controls">
+              <h3>Speler 2 (Cyaan)</h3>
+              <p><strong>Beweging:</strong> ↑ ↓ ← →</p>
+              <p><strong>Bom:</strong> ENTER</p>
+            </div>
+            <div class="player-controls">
+              <h3>Speler 3 (Geel)</h3>
+              <p><strong>Beweging:</strong> I J K L</p>
+              <p><strong>Bom:</strong> SHIFT</p>
+            </div>
+          </div>
+
+          <div class="power-ups-info">
+            <h2>Power-ups</h2>
+            <p>💣 Extra bom</p>
+            <p>💥 Grotere explosie</p>
+            <p>⚡ Sneller lopen</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="gameOverModal" class="modal hidden">
+        <div class="modal-content">
+          <h2 id="gameOverTitle">Game Over</h2>
+          <p id="gameOverMessage"></p>
+          <button onclick="location.reload()">Nieuw spel</button>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>Start het spel met: npm install && node server.js</p>
+    </footer>
+  </div>
+
+  <script src="https://cdn.socket.io/4.5.4/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
