@@ -3,43 +3,38 @@ const game = {
   socket: null,
   player: null,
   gameState: null,
+  gameId: null,
   playerId: null,
   players: {},
   bombIdToVisual: {},
   keysPressed: {},
   gameStarted: false,
   gameOver: false,
+  isReady: false,
+  playersReadyStatus: {},
   explosions: new Set(),
   lastMoveTime: 0,
   moveDelay: 100
 };
 
-// Key mappings for controls
+// Key mappings - Alle spelers gebruiken pijltjestoetsen + Enter
 const CONTROLS = {
-  // Player 1: WASD + Space
-  'p1': {
-    'w': 'up',
-    'a': 'left',
-    's': 'down',
-    'd': 'right',
-    ' ': 'bomb'
-  },
-  // Player 2: Arrow keys + Enter
-  'p2': {
-    'arrowup': 'up',
-    'arrowleft': 'left',
-    'arrowdown': 'down',
-    'arrowright': 'right',
-    'enter': 'bomb'
-  },
-  // Player 3: IJKL + Shift
-  'p3': {
-    'i': 'up',
-    'j': 'left',
-    'k': 'down',
-    'l': 'right',
-    'shift': 'bomb'
-  }
+  'arrowup': 'up',
+  'arrowleft': 'left',
+  'arrowdown': 'down',
+  'arrowright': 'right',
+  'enter': 'bomb',
+  // Alternative controls ook beschikbaar
+  'w': 'up',
+  'a': 'left',
+  's': 'down',
+  'd': 'right',
+  ' ': 'bomb',
+  'i': 'up',
+  'j': 'left',
+  'k': 'down',
+  'l': 'right',
+  'shift': 'bomb'
 };
 
 // Initialization
@@ -52,18 +47,17 @@ function initializeGame() {
   game.socket = io();
   
   game.socket.on('connect', () => {
-    console.log('Connected to server');
     updateStatus('Verbonden! Spel starten...');
     
     // Request to join game
     game.socket.emit('join_game', {}, (response) => {
       if (response.success) {
-        console.log('Joined game successfully');
         game.player = response.player;
         game.playerId = game.socket.id;
+        game.gameId = response.gameId;
         game.gameState = response.game;
         
-        updateStatus(`Speler ${game.player.playerNumber} binnengekomen (${response.game.players.length}/3)`);
+        updateStatus(`Speler ${game.player.playerNumber} binnengekomen in ${game.gameId} (${response.game.players.length}/3)`);
         
         if (!response.game.gameStarted) {
           updateStatus(`Wachtend op spelers... (${response.game.players.length}/3)`);
@@ -82,14 +76,11 @@ function initializeGame() {
   
   // Socket events
   game.socket.on('player_joined', (data) => {
-    console.log('Player joined:', data);
-    game.gameState.players = data.totalPlayers > 1 ? 
-      Array(data.totalPlayers).fill(0) : game.gameState.players;
-    updateStatus(`Spelers verbonden: ${data.totalPlayers}/3`);
+    game.gameId = data.gameId;
+    updateStatus(`Spelers in ${game.gameId}: ${data.totalPlayers}/3`);
   });
   
   game.socket.on('game_start', (data) => {
-    console.log('Game started!');
     game.gameStarted = true;
     game.gameState = data;
     game.gameState.bombs = [];
@@ -101,7 +92,13 @@ function initializeGame() {
     }
     
     updateStatus('Spel gestart!');
+    hideReadySection();
     renderGameBoard();
+  });
+  
+  game.socket.on('players_ready_status', (data) => {
+    game.playersReadyStatus = data;
+    updateReadyStatus();
   });
   
   game.socket.on('player_moved', (data) => {
@@ -115,7 +112,6 @@ function initializeGame() {
   });
   
   game.socket.on('bomb_placed', (data) => {
-    console.log('Bomb placed:', data);
     game.gameState.bombs.push({
       id: data.bombId,
       x: data.x,
@@ -127,10 +123,19 @@ function initializeGame() {
   });
   
   game.socket.on('bomb_exploded', (data) => {
-    console.log('Bomb exploded:', data);
+    // Add shake effect
+    const board = document.getElementById('gameBoard');
+    board.classList.add('shake');
+    setTimeout(() => board.classList.remove('shake'), 300);
     
     // Remove bomb from state
     game.gameState.bombs = game.gameState.bombs.filter(b => b.id !== data.bombId);
+    
+    // Update grid (remove blocks)
+    game.gameState.grid = data.grid;
+    
+    // Update power-ups
+    game.gameState.powerUps = data.powerUps;
     
     // Add explosions temporarily
     game.explosions.clear();
@@ -143,7 +148,6 @@ function initializeGame() {
       const player = game.gameState.players.find(p => p.id === deadPlayerId);
       if (player) {
         player.alive = false;
-        console.log('Player died:', deadPlayerId);
       }
     }
     
@@ -156,8 +160,14 @@ function initializeGame() {
     }, 500);
   });
   
+  game.socket.on('powerups_updated', (data) => {
+    game.gameState.powerUps = data.powerUps;
+    game.gameState.players = data.players;
+    renderGameBoard();
+    updatePlayersStats();
+  });
+  
   game.socket.on('game_over', (data) => {
-    console.log('Game over!');
     game.gameOver = true;
     
     let message = '';
@@ -176,6 +186,52 @@ function initializeGame() {
   });
 }
 
+function showGameOverModal(message) {
+  const modal = document.getElementById('gameOverModal');
+  const gameOverMessage = document.getElementById('gameOverMessage');
+  gameOverMessage.textContent = message;
+  modal.style.display = 'flex';
+  
+  const restartBtn = document.getElementById('restartBtn');
+  if (restartBtn.onclick) {
+    // Remove old listener
+    const newRestartBtn = restartBtn.cloneNode(true);
+    restartBtn.parentNode.replaceChild(newRestartBtn, restartBtn);
+  }
+  
+  document.getElementById('restartBtn').onclick = () => {
+    modal.style.display = 'none';
+    // Reset and join new game
+    game.gameOver = false;
+    game.gameStarted = false;
+    game.isReady = false;
+    game.player = null;
+    game.gameState = null;
+    game.playersReadyStatus = {};
+    game.explosions.clear();
+    
+    // Join a new game
+    game.socket.emit('join_game', {}, (response) => {
+      if (response.success) {
+        game.player = response.player;
+        game.gameId = response.gameId;
+        game.gameState = response.game;
+        
+        updateStatus(`Nieuwe spel: ${game.gameId} (${response.game.players.length}/3)`);
+        
+        if (!response.game.gameStarted) {
+          showReadySection();
+        } else {
+          hideReadySection();
+        }
+        
+        renderGameBoard();
+        startInputHandling();
+      }
+    });
+  };
+}
+
 function startInputHandling() {
   document.addEventListener('keydown', (e) => {
     if (game.gameOver) return;
@@ -189,36 +245,11 @@ function startInputHandling() {
       key = 'arrow' + e.key.slice(5).toLowerCase();
     }
     
-    console.log('Key pressed:', key, 'Player:', game.player?.playerNumber);
+    // Check if this key is in our controls
+    const action = CONTROLS[key];
     
-    // Determine which player this key belongs to
-    let playerNum = null;
-    let action = null;
-    
-    // Player 1 (WASD + Space)
-    if (['w', 'a', 's', 'd', ' '].includes(key)) {
-      playerNum = 1;
-      action = CONTROLS.p1[key] || CONTROLS.p1[' '];
-    }
-    // Player 2 (Arrow keys + Enter)
-    else if (key.startsWith('arrow') || key === 'enter') {
-      playerNum = 2;
-      action = CONTROLS.p2[key];
-      console.log('Player 2 action:', action);
-    }
-    // Player 3 (IJKL + Shift)
-    else if (['i', 'j', 'k', 'l'].includes(key)) {
-      playerNum = 3;
-      action = CONTROLS.p3[key];
-    }
-    else if (shift && game.player && game.player.playerNumber === 3) {
-      playerNum = 3;
-      action = 'bomb';
-    }
-    
-    // Only handle if it's our player
-    if (playerNum === game.player?.playerNumber) {
-      console.log('Handling action for player', playerNum, ':', action);
+    // Handle the action (works for any player)
+    if (action) {
       if (action === 'bomb') {
         e.preventDefault();
         game.socket.emit('bomb');
@@ -306,17 +337,15 @@ function renderGameBoard() {
         }
         
         cell.appendChild(puDiv);
-        board.appendChild(cell);
-        continue;
       }
       
-      // Check for player
+      // Check for player (render on top of power-up)
       const player = game.gameState.players?.find(p => p.x === x && p.y === y);
       if (player) {
         cell.classList.add('player');
         const playerSprite = document.createElement('div');
         playerSprite.className = `player-sprite p${player.playerNumber}`;
-        playerSprite.textContent = player.playerNumber;
+        playerSprite.textContent = player.character || player.playerNumber;
         
         if (!player.alive) {
           playerSprite.style.opacity = '0.3';
@@ -372,4 +401,47 @@ function showGameOverModal(message) {
   
   messageEl.textContent = message;
   modal.classList.remove('hidden');
+}
+
+function toggleReady() {
+  if (!game.gameStarted) {
+    game.isReady = !game.isReady;
+    game.socket.emit('ready');
+    updateReadyStatus();
+  }
+}
+
+function updateReadyStatus() {
+  const readyStatusDiv = document.getElementById('readyStatus');
+  const readyButton = document.getElementById('readyButton');
+  
+  if (!readyStatusDiv || !readyButton) return;
+  
+  readyStatusDiv.innerHTML = '';
+  
+  if (!game.gameState?.players) return;
+  
+  for (const player of game.gameState.players) {
+    const isReady = game.playersReadyStatus[player.id] || false;
+    const indicator = document.createElement('div');
+    indicator.className = `ready-indicator ${isReady ? 'ready' : 'not-ready'}`;
+    indicator.textContent = `${isReady ? '✓' : '✗'} Speler ${player.playerNumber}`;
+    readyStatusDiv.appendChild(indicator);
+  }
+  
+  // Update button appearance
+  if (game.isReady) {
+    readyButton.classList.add('ready');
+    readyButton.textContent = '✓ Klaar!';
+  } else {
+    readyButton.classList.remove('ready');
+    readyButton.textContent = 'Klaar!';
+  }
+}
+
+function hideReadySection() {
+  const readySection = document.getElementById('readySection');
+  if (readySection) {
+    readySection.style.display = 'none';
+  }
 }

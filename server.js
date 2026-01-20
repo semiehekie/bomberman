@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -14,6 +15,9 @@ const io = socketIo(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// JSON file path for bomb data
+const BOMBS_JSON_FILE = path.join(__dirname, 'bombs_state.json');
+
 // Game constants
 const GRID_WIDTH = 13;
 const GRID_HEIGHT = 11;
@@ -25,11 +29,34 @@ const SPAWN_POINTS = [
 const BOMB_TIMER = 2000;
 const BOMB_RADIUS = 2;
 const POWER_UP_TYPES = ['extra_bomb', 'bigger_radius', 'speed'];
-const POWER_UP_SPAWN_CHANCE = 0.3;
+const POWER_UP_SPAWN_CHANCE = 0.9;
+const PLAYER_CHARACTERS = ['🔴', '🔵', '🟡']; // Colorful player characters
 
 // Game state
 let games = {};
 let players = {};
+let nextGameId = 1;
+
+// Generate unique game ID
+function generateGameId() {
+  return `game_${nextGameId++}`;
+}
+
+// Find or create a game for a player
+function getOrCreateGame() {
+  // Look for a game that is not started and has space
+  for (const gameId in games) {
+    const game = games[gameId];
+    if (!game.gameStarted && game.players.length < 3 && !game.gameOver) {
+      return gameId;
+    }
+  }
+  
+  // No available game, create a new one
+  const newGameId = generateGameId();
+  initializeGame(newGameId);
+  return newGameId;
+}
 
 // Initialize game grid
 function createGameGrid() {
@@ -64,6 +91,45 @@ function createGameGrid() {
   return grid;
 }
 
+// Write bombs to JSON file
+function writeBombsToJSON(roomId) {
+  const game = games[roomId];
+  if (!game) return;
+  
+  try {
+    const bombsData = {
+      timestamp: Date.now(),
+      roomId: roomId,
+      bombs: game.bombs.map(b => ({
+        id: b.id,
+        x: b.x,
+        y: b.y,
+        playerId: b.playerId,
+        timer: b.timer
+      }))
+    };
+    
+    fs.writeFileSync(BOMBS_JSON_FILE, JSON.stringify(bombsData, null, 2));
+  } catch (error) {
+    // Silently fail if file write fails
+    // console.error('Error writing bombs JSON:', error);
+  }
+}
+
+// Read bombs from JSON file
+function readBombsFromJSON() {
+  try {
+    if (fs.existsSync(BOMBS_JSON_FILE)) {
+      const data = fs.readFileSync(BOMBS_JSON_FILE, 'utf8');
+      const bombsData = JSON.parse(data);
+      return bombsData;
+    }
+  } catch (error) {
+    console.error('Error reading bombs JSON:', error);
+  }
+  return null;
+}
+
 // Initialize game for a room
 function initializeGame(roomId) {
   games[roomId] = {
@@ -74,8 +140,15 @@ function initializeGame(roomId) {
     powerUps: [],
     gameStarted: false,
     gameOver: false,
-    winner: null
+    winner: null,
+    playersReady: {}, // Track ready status for each player
+    bombUpdateInterval: null
   };
+  
+  // Start interval to update bombs in JSON every 100ms
+  games[roomId].bombUpdateInterval = setInterval(() => {
+    writeBombsToJSON(roomId);
+  }, 100);
 }
 
 // Add player to game
@@ -96,20 +169,36 @@ function addPlayerToGame(roomId, playerId, playerData) {
       bombRadius: BOMB_RADIUS,
       speed: 150,
       alive: true,
-      color: ['#FF6B6B', '#4ECDC4', '#FFE66D'][game.players.length]
+      color: ['#FF6B6B', '#4ECDC4', '#FFE66D'][game.players.length],
+      character: PLAYER_CHARACTERS[game.players.length]
     };
     game.players.push(newPlayer);
+    game.playersReady[playerId] = false; // Player joins but is not ready yet
     players[playerId] = { roomId, playerNumber: game.players.length };
     
-    // Start game when 3 players connected
-    if (game.players.length === 3 && !game.gameStarted) {
-      game.gameStarted = true;
-      io.to(roomId).emit('game_start', { players: game.players, grid: game.grid });
-    }
+    // Don't start automatically - wait for all players to be ready
     
     return newPlayer;
   }
   return null;
+}
+
+// Check if all players are ready and start game
+function checkAndStartGame(roomId) {
+  const game = games[roomId];
+  if (!game || game.gameStarted) return;
+  
+  // Must have all 3 players connected
+  if (game.players.length !== 3) return;
+  
+  // Check if all players are ready
+  const allReady = game.players.every(player => game.playersReady[player.id] === true);
+  
+  if (allReady) {
+    game.gameStarted = true;
+    io.to(roomId).emit('game_start', { players: game.players, grid: game.grid });
+    console.log('Game started! All 3 players are ready');
+  }
 }
 
 // Handle player movement
@@ -143,6 +232,12 @@ function movePlayer(roomId, playerId, direction) {
     const powerUp = game.powerUps[powerUpIndex];
     applyPowerUp(player, powerUp.type);
     game.powerUps.splice(powerUpIndex, 1);
+    
+    // Tell all clients about the updated power-ups and players
+    io.to(roomId).emit('powerups_updated', {
+      powerUps: game.powerUps,
+      players: game.players
+    });
   }
   
   player.x = newX;
@@ -189,6 +284,9 @@ function placeBomb(roomId, playerId) {
   game.bombs.push(bomb);
   player.bombs--;
   
+  // Update JSON immediately
+  writeBombsToJSON(roomId);
+  
   io.to(roomId).emit('bomb_placed', {
     bombId: bomb.id,
     x: bomb.x,
@@ -212,6 +310,9 @@ function detonateBomb(roomId, bombId) {
   
   const bomb = game.bombs[bombIndex];
   game.bombs.splice(bombIndex, 1);
+  
+  // Update JSON after removing bomb
+  writeBombsToJSON(roomId);
   
   // Return bomb to player
   const player = game.players.find(p => p.id === bomb.playerId);
@@ -271,7 +372,9 @@ function detonateBomb(roomId, bombId) {
   io.to(roomId).emit('bomb_exploded', {
     bombId,
     explosions,
-    deadPlayers
+    deadPlayers,
+    grid: game.grid,
+    powerUps: game.powerUps
   });
   
   // Clear explosions after animation
@@ -293,15 +396,19 @@ io.on('connection', (socket) => {
   console.log('Player connected:', socket.id);
   
   socket.on('join_game', (data, callback) => {
-    const roomId = 'room1'; // Single room for now
+    // Find or create a game
+    const roomId = getOrCreateGame();
     socket.join(roomId);
     
     const player = addPlayerToGame(roomId, socket.id, data);
     
     if (player) {
       const game = games[roomId];
+      console.log(`Player joined ${roomId} (${game.players.length}/3 players)`);
+      
       callback({
         success: true,
+        gameId: roomId,
         player,
         game: {
           grid: game.grid,
@@ -312,10 +419,32 @@ io.on('connection', (socket) => {
       
       io.to(roomId).emit('player_joined', {
         player,
-        totalPlayers: game.players.length
+        totalPlayers: game.players.length,
+        gameId: roomId
       });
     } else {
       callback({ success: false, message: 'Room full' });
+    }
+  });
+  
+  socket.on('ready', () => {
+    const playerData = players[socket.id];
+    if (playerData) {
+      const game = games[playerData.roomId];
+      if (game) {
+        game.playersReady[socket.id] = true;
+        console.log('Player ready:', socket.id);
+        
+        // Send updated ready status to all players
+        const readyStatus = {};
+        for (const player of game.players) {
+          readyStatus[player.id] = game.playersReady[player.id] || false;
+        }
+        io.to(playerData.roomId).emit('players_ready_status', readyStatus);
+        
+        // Check if all players are ready to start
+        checkAndStartGame(playerData.roomId);
+      }
     }
   });
   
@@ -343,6 +472,15 @@ io.on('connection', (socket) => {
         if (playerIndex !== -1) {
           game.players.splice(playerIndex, 1);
         }
+        
+        // Clean up game if all players are gone
+        if (game.players.length === 0) {
+          if (game.bombUpdateInterval) {
+            clearInterval(game.bombUpdateInterval);
+          }
+          delete games[playerData.roomId];
+        }
+        
         io.to(playerData.roomId).emit('player_disconnected', { playerId: socket.id });
       }
     }
